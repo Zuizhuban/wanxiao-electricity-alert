@@ -1,0 +1,81 @@
+# 完美校园 低电费提醒（云缴费 / 用电支出 版）
+#
+# 放到你仓库的 .github/workflows/electricity-alert.yml
+# 脚本 wanxiao-cloudpay.js 放到仓库**根目录**（和 .github 同级）
+#
+# 需要在仓库里配置：
+#   Secrets（Settings → Secrets and variables → Actions → Secrets）：
+#     WANXIAO_PHONE      完美校园登录手机号
+#     WANXIAO_PASSWORD   完美校园登录密码
+#     WANXIAO_DEVICE_ID  已验证的设备 ID（就是本地 wanxiao-device.json 里的那个）
+#     WANXIAO_QMSG_KEY   Qmsg 酱的 KEY（不想推送可以不配）
+#     WANXIAO_ALERT_QQ   接收提醒的 QQ 号（不想推送可以不配）
+#   Variables（同一页面的 Variables 选项卡，注意不是 Secrets）：
+#     WANXIAO_THRESHOLD  提醒阈值，单位「度」，例如 20
+#
+# 手动查当前剩余电量：Actions → 选这个 workflow → Run workflow →
+#   推送模式选 always → Run，QQ 立刻收到当前剩余电量（不依赖阈值）。
+
+name: 完美校园 低电费提醒
+
+on:
+  schedule:
+    # cron 用世界协调时(UTC)，北京时间 = UTC + 8
+    # "0 4,11 * * *" = 北京时间每天 12:00 和 19:00 各跑一次
+    - cron: "0 4,11 * * *"
+  workflow_dispatch: # 保留这个，才能在网页上手动点 Run workflow
+    inputs:
+      push:
+        description: "推送模式"
+        required: false
+        default: "low-only"
+        type: choice
+        options:
+          - low-only # 只在低于阈值时推（定时任务用这个）
+          - always # 无论如何都推当前剩余电量（手动查询用这个）
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 查询剩余电量，低于阈值就推送
+        env:
+          WANXIAO_PHONE: ${{ secrets.WANXIAO_PHONE }}
+          WANXIAO_PASSWORD: ${{ secrets.WANXIAO_PASSWORD }}
+          WANXIAO_DEVICE_ID: ${{ secrets.WANXIAO_DEVICE_ID }}
+          WANXIAO_QMSG_KEY: ${{ secrets.WANXIAO_QMSG_KEY }}
+          WANXIAO_ALERT_QQ: ${{ secrets.WANXIAO_ALERT_QQ }}
+          WANXIAO_THRESHOLD: ${{ vars.WANXIAO_THRESHOLD }}
+          WANXIAO_PUSH_MODE: ${{ inputs.push || 'low-only' }}
+        run: |
+          set +e
+          node wanxiao-cloudpay.js \
+            --threshold "${WANXIAO_THRESHOLD:-15}" \
+            --device-id "$WANXIAO_DEVICE_ID" \
+            --push-mode "$WANXIAO_PUSH_MODE" \
+            --debug-dir wanxiao-debug
+          code=$?
+          if [ "$code" -eq 10 ]; then
+            echo "::warning::有房间电量低于阈值，已通过 Qmsg 推送提醒"
+            exit 0
+          fi
+          exit "$code"
+
+      - name: 上传调试数据（只在失败或需要排查时看）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wanxiao-debug
+          path: wanxiao-debug/
+          retention-days: 3
+          if-no-files-found: ignore
